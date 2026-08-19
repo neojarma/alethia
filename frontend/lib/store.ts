@@ -1,12 +1,19 @@
 import "server-only";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { randomBytes, scryptSync } from "node:crypto";
 import type { Database } from "./domain";
 import { chunkDocument } from "./knowledge-engine";
 
+declare global {
+  var _alethia_memory_db: Database | undefined;
+}
+
 const dataDir = path.join(process.cwd(), "data");
 const dataFile = path.join(dataDir, "alethia.json");
+const tmpFile = path.join(os.tmpdir(), "alethia.json");
+
 
 function seed(): Database {
   const hashPassword = (password: string) => {
@@ -373,188 +380,218 @@ function seed(): Database {
 }
 
 export async function readDb(): Promise<Database> {
+  if (globalThis._alethia_memory_db) {
+    return globalThis._alethia_memory_db;
+  }
+  let db: Database;
   try {
-    const db = JSON.parse(await readFile(dataFile, "utf8")) as Database;
-    db.analytics ||= [];
-    db.divisions ||= [];
-    db.clientAccounts ||= [];
-    db.clientSessions ||= [];
-    if (!db.clientAccounts.length) {
-      const tenantDefaults = seed();
-      db.divisions = tenantDefaults.divisions;
-      db.clientAccounts = tenantDefaults.clientAccounts;
+    try {
+      db = JSON.parse(await readFile(dataFile, "utf8")) as Database;
+    } catch {
+      db = JSON.parse(await readFile(tmpFile, "utf8")) as Database;
     }
-    if (!db.documents.some((item) => item.id === "doc-platform-architecture")) {
-      const showcaseDefaults = seed();
-      db.documents.push(...showcaseDefaults.documents.filter((item) => item.id.startsWith("doc-platform-") || item.id.startsWith("doc-secure-") || item.id.startsWith("doc-support-") || item.id.startsWith("doc-operations-") || item.id.startsWith("doc-legal-")));
-    }
-    db.audit ||= [];
-    db.audit.forEach((event) => {
-      event.organizationId ||= "org-alethia";
-    });
-    db.agentTasks ||= [];
-    db.verifications ||= [];
-    db.documentAnalyses ||= [];
-    const approvedSeedDocumentIds = new Set([
-      "doc-policy-v3",
-      "doc-api-auth-v3",
-      "doc-incident-v3",
-      "doc-platform-architecture",
-      "doc-secure-delivery",
-      "doc-support-trusted-answers",
-      "doc-operations-change",
-      "doc-legal-lifecycle",
-    ]);
-    db.documents
-      .filter(
-        (document) =>
-          approvedSeedDocumentIds.has(document.id) &&
-          !db.documentAnalyses.some(
-            (analysis) => analysis.documentId === document.id,
-          ),
-      )
-      .forEach((document) => {
-        db.documentAnalyses.push({
-          documentId: document.id,
-          summary: `Understand and apply ${document.title}.`,
-          businessImpact:
-            "Verified understanding reduces operational mistakes and creates auditable readiness evidence.",
-          keyChanges: [
-            "Use the current approved source",
-            "Escalate when evidence is insufficient",
-          ],
-          affectedDepartments: [document.department],
-          affectedRoles: document.access,
-          provider: "Alethia showcase",
-          model: "grounded-seed-v1",
-          createdAt: document.createdAt,
-          approvalStatus: "approved",
-          approvedBy: "Maya Putri",
-          approvedAt: document.createdAt,
-          approvalComment: "Approved competition demo knowledge test.",
-          questions: [
-            {
-              question: `Which source should guide work covered by ${document.title}?`,
-              scenario: "You need to make a material decision.",
-              options: [
-                "The current approved document",
-                "A colleague's memory",
-                "An old message",
-                "An unverified public answer",
-              ],
-              correctIndex: 0,
-              explanation: "Use the current approved source.",
-              citation: "Section 1",
-            },
-            {
-              question:
-                "What should you do when the available evidence is insufficient?",
-              scenario: "The document does not support a confident answer.",
-              options: [
-                "Guess",
-                "Escalate to the named owner",
-                "Ignore the issue",
-                "Use an outdated version",
-              ],
-              correctIndex: 1,
-              explanation: "Escalation preserves accuracy and accountability.",
-              citation: "Section 2",
-            },
-            {
-              question: "Why is verification recorded?",
-              scenario: "A material process has changed.",
-              options: [
-                "For decoration",
-                "To replace the source",
-                "To create readiness evidence",
-                "To remove manager ownership",
-              ],
-              correctIndex: 2,
-              explanation:
-                "Verification turns distribution into measurable understanding.",
-              citation: "Section 3",
-            },
-          ],
-        });
-      });
-    db.documentAnalyses.forEach((analysis) => {
-      if (!analysis.approvalStatus) {
-        const wasPublished = db.campaigns.some(
-          (campaign) => campaign.documentId === analysis.documentId,
-        );
-        analysis.approvalStatus = wasPublished ? "approved" : "pending_review";
-        analysis.approvedBy = wasPublished ? "Maya Putri" : null;
-        analysis.approvedAt = wasPublished ? analysis.createdAt : null;
-        analysis.approvalComment = wasPublished
-          ? "Migrated from an existing published campaign."
-          : "";
-      }
-    });
-    db.knowledgeAssignments ||= [];
-    db.notifications ||= [];
-    db.impactEvidence ||= [];
-    db.connectors ||= [];
-    db.connectors.forEach((connector) => {
-      connector.schedule ||= "manual";
-      connector.nextSyncAt ||= null;
-    });
-    db.syncRuns ||= [];
-    db.syncRuns.forEach((run) => {
-      run.updated ??= 0;
-      run.unchanged ??= 0;
-      run.changesCreated ??= 0;
-    });
-    db.teams ||= [];
-    db.sso ||= {
-      enabled: false,
-      provider: "oidc",
-      issuer: "",
-      clientId: "",
-      allowedDomain: "alethia.id",
-    };
-    db.governance ||= {
-      citationRequired: true,
-      minConfidence: 0.7,
-      humanApprovalForCritical: true,
-      retentionDays: 365,
-      allowedModels: ["alethia-grounded-v1"],
-      allowedProviders: ["sumopod", "local"],
-      blockBelowConfidence: true,
-      crossDivisionIsolation: true,
-      requirePromptAudit: true,
-    };
-    db.governance.allowedProviders ||= ["sumopod", "local"];
-    db.governance.blockBelowConfidence ??= true;
-    db.governance.crossDivisionIsolation ??= true;
-    db.governance.requirePromptAudit ??= true;
-    db.documentVersions ||= [];
-    db.changeIntelligence ||= [];
-    db.aiDecisionLogs ||= [];
-    db.modelRegistry ||= [];
-    db.auditSchedules ||= [];
-    db.governanceFindings ||= [];
-    db.departmentAgents ||= [];
-    db.evaluations ||= [];
-    db.organizations ||= [];
-    db.memberships ||= [];
-    db.subscriptions ||= [];
-    db.usage ||= [];
-    db.featureFlags ||= [];
-    db.workflowTemplates ||= [];
-    return db;
   } catch {
-    const db = seed();
+    db = seed();
     await writeDb(db);
     return db;
   }
+
+  db.analytics ||= [];
+  db.divisions ||= [];
+  db.clientAccounts ||= [];
+  db.clientSessions ||= [];
+  if (!db.clientAccounts.length) {
+    const tenantDefaults = seed();
+    db.divisions = tenantDefaults.divisions;
+    db.clientAccounts = tenantDefaults.clientAccounts;
+  }
+  if (!db.documents.some((item) => item.id === "doc-platform-architecture")) {
+    const showcaseDefaults = seed();
+    db.documents.push(...showcaseDefaults.documents.filter((item) => item.id.startsWith("doc-platform-") || item.id.startsWith("doc-secure-") || item.id.startsWith("doc-support-") || item.id.startsWith("doc-operations-") || item.id.startsWith("doc-legal-")));
+  }
+  db.audit ||= [];
+  db.audit.forEach((event) => {
+    event.organizationId ||= "org-alethia";
+  });
+  db.agentTasks ||= [];
+  db.verifications ||= [];
+  db.documentAnalyses ||= [];
+  const approvedSeedDocumentIds = new Set([
+    "doc-policy-v3",
+    "doc-api-auth-v3",
+    "doc-incident-v3",
+    "doc-platform-architecture",
+    "doc-secure-delivery",
+    "doc-support-trusted-answers",
+    "doc-operations-change",
+    "doc-legal-lifecycle",
+  ]);
+  db.documents
+    .filter(
+      (document) =>
+        approvedSeedDocumentIds.has(document.id) &&
+        !db.documentAnalyses.some(
+          (analysis) => analysis.documentId === document.id,
+        ),
+    )
+    .forEach((document) => {
+      db.documentAnalyses.push({
+        documentId: document.id,
+        summary: `Understand and apply ${document.title}.`,
+        businessImpact:
+          "Verified understanding reduces operational mistakes and creates auditable readiness evidence.",
+        keyChanges: [
+          "Use the current approved source",
+          "Escalate when evidence is insufficient",
+        ],
+        affectedDepartments: [document.department],
+        affectedRoles: document.access,
+        provider: "Alethia showcase",
+        model: "grounded-seed-v1",
+        createdAt: document.createdAt,
+        approvalStatus: "approved",
+        approvedBy: "Maya Putri",
+        approvedAt: document.createdAt,
+        approvalComment: "Approved competition demo knowledge test.",
+        questions: [
+          {
+            question: `Which source should guide work covered by ${document.title}?`,
+            scenario: "You need to make a material decision.",
+            options: [
+              "The current approved document",
+              "A colleague's memory",
+              "An old message",
+              "An unverified public answer",
+            ],
+            correctIndex: 0,
+            explanation: "Use the current approved source.",
+            citation: "Section 1",
+          },
+          {
+            question:
+              "What should you do when the available evidence is insufficient?",
+            scenario: "The document does not support a confident answer.",
+            options: [
+              "Guess",
+              "Escalate to the named owner",
+              "Ignore the issue",
+              "Use an outdated version",
+            ],
+            correctIndex: 1,
+            explanation: "Escalation preserves accuracy and accountability.",
+            citation: "Section 2",
+          },
+          {
+            question: "Why is verification recorded?",
+            scenario: "A material process has changed.",
+            options: [
+              "For decoration",
+              "To replace the source",
+              "To create readiness evidence",
+              "To remove manager ownership",
+            ],
+            correctIndex: 2,
+            explanation:
+              "Verification turns distribution into measurable understanding.",
+            citation: "Section 3",
+          },
+        ],
+      });
+    });
+  db.documentAnalyses.forEach((analysis) => {
+    if (!analysis.approvalStatus) {
+      const wasPublished = db.campaigns.some(
+        (campaign) => campaign.documentId === analysis.documentId,
+      );
+      analysis.approvalStatus = wasPublished ? "approved" : "pending_review";
+      analysis.approvedBy = wasPublished ? "Maya Putri" : null;
+      analysis.approvedAt = wasPublished ? analysis.createdAt : null;
+      analysis.approvalComment = wasPublished
+        ? "Migrated from an existing published campaign."
+        : "";
+    }
+  });
+  db.knowledgeAssignments ||= [];
+  db.notifications ||= [];
+  db.impactEvidence ||= [];
+  db.connectors ||= [];
+  db.connectors.forEach((connector) => {
+    connector.schedule ||= "manual";
+    connector.nextSyncAt ||= null;
+  });
+  db.syncRuns ||= [];
+  db.syncRuns.forEach((run) => {
+    run.updated ??= 0;
+    run.unchanged ??= 0;
+    run.changesCreated ??= 0;
+  });
+  db.teams ||= [];
+  db.sso ||= {
+    enabled: false,
+    provider: "oidc",
+    issuer: "",
+    clientId: "",
+    allowedDomain: "alethia.id",
+  };
+  db.governance ||= {
+    citationRequired: true,
+    minConfidence: 0.7,
+    humanApprovalForCritical: true,
+    retentionDays: 365,
+    allowedModels: ["alethia-grounded-v1"],
+    allowedProviders: ["sumopod", "local"],
+    blockBelowConfidence: true,
+    crossDivisionIsolation: true,
+    requirePromptAudit: true,
+  };
+  db.governance.allowedProviders ||= ["sumopod", "local"];
+  db.governance.blockBelowConfidence ??= true;
+  db.governance.crossDivisionIsolation ??= true;
+  db.governance.requirePromptAudit ??= true;
+  db.documentVersions ||= [];
+  db.changeIntelligence ||= [];
+  db.aiDecisionLogs ||= [];
+  db.modelRegistry ||= [];
+  db.auditSchedules ||= [];
+  db.governanceFindings ||= [];
+  db.departmentAgents ||= [];
+  db.evaluations ||= [];
+  db.organizations ||= [];
+  db.memberships ||= [];
+  db.subscriptions ||= [];
+  db.usage ||= [];
+  db.featureFlags ||= [];
+  db.workflowTemplates ||= [];
+
+  globalThis._alethia_memory_db = db;
+  return db;
 }
 
 export async function writeDb(db: Database) {
-  await mkdir(dataDir, { recursive: true });
-  const temp = `${dataFile}.tmp`;
-  await writeFile(temp, JSON.stringify(db, null, 2));
-  await rename(temp, dataFile);
+  globalThis._alethia_memory_db = db;
+  const jsonContent = JSON.stringify(db, null, 2);
+
+  // Try writing to project data directory first (local dev / persistent servers)
+  try {
+    await mkdir(dataDir, { recursive: true });
+    const temp = `${dataFile}.tmp`;
+    await writeFile(temp, jsonContent);
+    await rename(temp, dataFile);
+    return;
+  } catch {
+    // Read-only filesystem (EROFS on Vercel) - fall through to /tmp
+  }
+
+  // Fallback: write to OS temp directory (/tmp) which is writable on Vercel lambda
+  try {
+    const temp = `${tmpFile}.tmp`;
+    await writeFile(temp, jsonContent);
+    await rename(temp, tmpFile);
+  } catch {
+    // In-memory cache is already updated, so serverless execution safely continues
+  }
 }
+
 
 export async function mutateDb<T>(fn: (db: Database) => T | Promise<T>) {
   const db = await readDb();
