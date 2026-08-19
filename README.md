@@ -12,7 +12,7 @@ The local showcase account is `admin@alethia.demo` / `Welcome123!`. Engineering 
 
 Organization administrators see the company. Division managers see only their division's people, documents, campaigns and results. Members see personal work plus allowed company/division knowledge. New companies receive tour-ready Engineering, Legal, Support and Operations documentation with verification packs, allowing campaign creation and completion immediately.
 
-Persistence remains self-contained in `data/alethia.json` for the offline competition build. The server-only storage boundary keeps a later Postgres adapter migration isolated from UI/workflow code. Set a strong `AUTH_SECRET` in production.
+Persistence remains self-contained in `frontend/data/alethia.json` for the offline competition build. The server-only storage boundary keeps a later Postgres adapter migration isolated from UI/workflow code. Set a strong `AUTH_SECRET` in production.
 
 ## Included
 
@@ -29,15 +29,25 @@ Persistence remains self-contained in `data/alethia.json` for the offline compet
 - permission-aware grounded retrieval with explicit insufficient-evidence behavior
 - JSON persistence, API-enforced demo RBAC, connector sync, governance and enterprise APIs
 
-All included company content is fictional demo data. Runtime state persists locally in `data/alethia.json`. Document analysis and knowledge-test generation call the configured Sumopod OpenAI-compatible endpoint using the fixed `deepseek-v4-flash` model. The API key remains server-only. Production deployment should replace demo authentication and JSON storage with an identity provider and PostgreSQL/pgvector while retaining the current API contracts.
+All included company content is fictional demo data. Runtime state persists locally in `frontend/data/alethia.json`. Document analysis and knowledge-test generation call the configured Sumopod OpenAI-compatible endpoint using the fixed `deepseek-v4-flash` model. The API key remains server-only. Production deployment should replace demo authentication and JSON storage with an identity provider and PostgreSQL/pgvector while retaining the current API contracts.
 
 ## Getting started
 
 ```bash
+cd frontend
 npm install
 cp .env.example .env.local
-# Set SUMOPOD_API_KEY in .env.local
+# Set SUMOPOD_API_KEY and AUTH_SECRET in .env.local
 npm run dev
+```
+
+To run the Emergent-compatible backend gateway locally in another terminal:
+
+```bash
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+.venv/bin/uvicorn server:app --host 0.0.0.0 --port 8001
 ```
 
 For cross-origin deployments, configure `ALLOWED_ORIGINS` as a comma-separated
@@ -52,23 +62,29 @@ Open [http://localhost:3000](http://localhost:3000) for the competition showcase
 Run the complete quality gate with:
 
 ```bash
-npm run verify
+cd frontend && npm run verify
 ```
 
 ## Deploying on Emergent
 
-Alethia is a single full-stack Next.js application. It must be imported at the
-Emergent workspace root so that `package.json`, `app/`, `components/`, and
-`lib/` exist directly under `/app` (not `/app/web`).
+Alethia uses Emergent's expected two-process folder layout without duplicating
+business logic:
+
+- `/app/backend/server.py` runs the required FastAPI process on port 8001 and
+  forwards public `/api/*` traffic to the internal Next.js API routes.
+- `/app/frontend/package.json` runs the complete Alethia Next.js application on
+  port 3000.
 
 1. In a new or empty Emergent task, choose **GitHub → Pull from GitHub**.
 2. Select `neojarma/alethia` and the `main` branch.
-3. Confirm `/app/package.json` and `/app/app/api/health/route.ts` exist.
+3. Confirm `/app/backend/server.py`, `/app/backend/.env`,
+   `/app/frontend/package.json`, and `/app/frontend/.env` exist.
 4. Run Preview and the pre-deployment health check before clicking Deploy.
-5. Add the values from `.env.example` through Emergent's secret/environment
-   variable manager. Never put a real API key or production `AUTH_SECRET` in
-   a committed `.env` file.
+5. Add production values based on `backend/.env.example` and
+   `frontend/.env.example` through Emergent's environment manager. Never put a
+   real API key or production `AUTH_SECRET` in a committed `.env` file.
 
-The tracked `backend/.env` is intentionally empty. It is only a compatibility
-placeholder for deployment jobs that probe for a split backend even though all
-Alethia server routes live in `app/api`.
+The committed `.env` files contain only safe build defaults. Production secrets
+must override them in Emergent. The gateway keeps the existing Next.js API
+contracts intact, so login cookies, uploads, AI analysis, verification and
+report downloads continue to use the same paths.
