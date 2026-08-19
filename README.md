@@ -54,3 +54,21 @@ Run the complete quality gate with:
 ```bash
 npm run verify
 ```
+
+## Deploying on Emergent
+
+Alethia is a single full-stack Next.js application. It must be imported at the
+Emergent workspace root so that `package.json`, `app/`, `components/`, and
+`lib/` exist directly under `/app` (not `/app/web`).
+
+1. In a new or empty Emergent task, choose **GitHub → Pull from GitHub**.
+2. Select `neojarma/alethia` and the `main` branch.
+3. Confirm `/app/package.json` and `/app/app/api/health/route.ts` exist.
+4. Run Preview and the pre-deployment health check before clicking Deploy.
+5. Add the values from `.env.example` through Emergent's secret/environment
+   variable manager. Never put a real API key or production `AUTH_SECRET` in
+   a committed `.env` file.
+
+The tracked `backend/.env` is intentionally empty. It is only a compatibility
+placeholder for deployment jobs that probe for a split backend even though all
+Alethia server routes live in `app/api`.
