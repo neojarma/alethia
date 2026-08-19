@@ -549,9 +549,11 @@ function normalizeDb(db: Database): Database {
   return db;
 }
 
-// PostgreSQL persistence adapter
+// PostgreSQL / Supabase Direct Connection persistence adapter
 async function getPostgresDb(): Promise<Database | null> {
   const connectionString =
+    process.env.SUPABASE_DATABASE_URL ||
+    process.env.SUPABASE_DB_URL ||
     process.env.POSTGRES_URL ||
     process.env.DATABASE_URL ||
     process.env.NEON_DATABASE_URL;
@@ -585,13 +587,15 @@ async function getPostgresDb(): Promise<Database | null> {
       return data as Database;
     }
   } catch (err) {
-    console.error("PostgreSQL read error:", err);
+    console.error("PostgreSQL/Supabase DB read error:", err);
   }
   return null;
 }
 
 async function savePostgresDb(db: Database): Promise<boolean> {
   const connectionString =
+    process.env.SUPABASE_DATABASE_URL ||
+    process.env.SUPABASE_DB_URL ||
     process.env.POSTGRES_URL ||
     process.env.DATABASE_URL ||
     process.env.NEON_DATABASE_URL;
@@ -623,9 +627,73 @@ async function savePostgresDb(db: Database): Promise<boolean> {
     await pool.end();
     return true;
   } catch (err) {
-    console.error("PostgreSQL write error:", err);
+    console.error("PostgreSQL/Supabase DB write error:", err);
     return false;
   }
+}
+
+// Supabase REST SDK Persistence Adapter
+async function getSupabaseRestDb(): Promise<Database | null> {
+  const supabaseUrl =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_KEY;
+
+  if (!supabaseUrl || !supabaseKey) return null;
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    const { data, error } = await supabase
+      .from("alethia_store")
+      .select("data")
+      .eq("id", "main")
+      .maybeSingle();
+
+    if (!error && data && data.data) {
+      const dbData = typeof data.data === "string" ? JSON.parse(data.data) : data.data;
+      return dbData as Database;
+    }
+  } catch (err) {
+    console.error("Supabase REST read error:", err);
+  }
+  return null;
+}
+
+async function saveSupabaseRestDb(db: Database): Promise<boolean> {
+  const supabaseUrl =
+    process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_KEY;
+
+  if (!supabaseUrl || !supabaseKey) return false;
+
+  try {
+    const { createClient } = await import("@supabase/supabase-js");
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
+    const { error } = await supabase.from("alethia_store").upsert(
+      {
+        id: "main",
+        data: db,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "id" }
+    );
+
+    if (!error) return true;
+    console.error("Supabase REST write error:", error);
+  } catch (err) {
+    console.error("Supabase REST write error:", err);
+  }
+  return false;
 }
 
 // MongoDB persistence adapter
@@ -674,21 +742,28 @@ async function saveMongoDb(db: Database): Promise<boolean> {
 }
 
 export async function readDb(): Promise<Database> {
-  // 1. PostgreSQL (Neon, Supabase, Vercel Postgres, Railway, etc.)
+  // 1. Supabase / PostgreSQL Direct Connection
   const pgDb = await getPostgresDb();
   if (pgDb) {
     globalThis._alethia_memory_db = normalizeDb(pgDb);
     return globalThis._alethia_memory_db;
   }
 
-  // 2. MongoDB (MongoDB Atlas, Emergent Mongo, etc.)
+  // 2. Supabase REST API SDK
+  const supaDb = await getSupabaseRestDb();
+  if (supaDb) {
+    globalThis._alethia_memory_db = normalizeDb(supaDb);
+    return globalThis._alethia_memory_db;
+  }
+
+  // 3. MongoDB (MongoDB Atlas, Emergent Mongo, etc.)
   const mongoDb = await getMongoDb();
   if (mongoDb) {
     globalThis._alethia_memory_db = normalizeDb(mongoDb);
     return globalThis._alethia_memory_db;
   }
 
-  // 3. In-memory / File / Seed fallback
+  // 4. In-memory / File / Seed fallback
   if (globalThis._alethia_memory_db) {
     return globalThis._alethia_memory_db;
   }
@@ -714,15 +789,21 @@ export async function readDb(): Promise<Database> {
 export async function writeDb(db: Database) {
   globalThis._alethia_memory_db = db;
 
-  // 1. PostgreSQL if configured
+  // 1. Supabase / PostgreSQL Direct Connection if configured
   if (await savePostgresDb(db)) {
     return;
   }
 
-  // 2. MongoDB if configured
+  // 2. Supabase REST API SDK if configured
+  if (await saveSupabaseRestDb(db)) {
+    return;
+  }
+
+  // 3. MongoDB if configured
   if (await saveMongoDb(db)) {
     return;
   }
+
 
   // 3. Fallback: Local file / /tmp
   const jsonContent = JSON.stringify(db, null, 2);
