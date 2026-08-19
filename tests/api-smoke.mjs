@@ -8,6 +8,12 @@ const dbPath = new URL("../data/alethia.json", import.meta.url);
 const originalDb = await readFile(dbPath, "utf8");
 const server = spawn("./node_modules/.bin/next", ["start", "-p", "3100"], {
   stdio: "ignore",
+  env: {
+    ...process.env,
+    AUTH_SECRET: "qa-only-auth-secret-with-at-least-32-characters",
+    ALLOWED_ORIGINS: "https://qa.example.test",
+    ENABLE_DEMO_MODE: "true",
+  },
 });
 const json = async (path, init) => {
   const response = await fetch(`${base}${path}`, init);
@@ -31,6 +37,29 @@ try {
   const health = await json("/api/health");
   assert.equal(health.response.status, 200);
   assert.equal(typeof health.body.health, "number");
+  const allowedCors = await fetch(`${base}/api/health`, {
+    headers: { origin: "https://qa.example.test" },
+  });
+  assert.equal(
+    allowedCors.headers.get("access-control-allow-origin"),
+    "https://qa.example.test",
+  );
+  const rejectedCors = await fetch(`${base}/api/health`, {
+    headers: { origin: "https://untrusted.example.test" },
+  });
+  assert.equal(rejectedCors.headers.get("access-control-allow-origin"), null);
+  const corsPreflight = await fetch(`${base}/api/health`, {
+    method: "OPTIONS",
+    headers: {
+      origin: "https://qa.example.test",
+      "access-control-request-method": "POST",
+    },
+  });
+  assert.equal(corsPreflight.status, 204);
+  assert.equal(
+    corsPreflight.headers.get("access-control-allow-origin"),
+    "https://qa.example.test",
+  );
   const unauthenticatedSession = await json("/api/session");
   assert.equal(unauthenticatedSession.response.status, 401);
   const protectedWorkspace = await fetch(`${base}/workspace`, {

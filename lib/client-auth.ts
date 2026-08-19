@@ -6,7 +6,14 @@ import { readDb } from "./store";
 export const CLIENT_SESSION_COOKIE = "alethia-session";
 export const AUTH_CONTEXT_COOKIE = "alethia-auth-context";
 type AuthContext = { userId: string; organizationId: string; divisionId: string | null; accountRole: AccountRole; functionalRole: DemoRole };
-const authSecret = () => process.env.AUTH_SECRET || "alethia-local-development-secret-change-in-production";
+const authSecret = () => {
+  const secret = process.env.AUTH_SECRET;
+  if (secret) return secret;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("AUTH_SECRET must be configured in production.");
+  }
+  return "alethia-local-development-secret-change-in-production";
+};
 export function signAuthContext(context: AuthContext) {
   const payload = Buffer.from(JSON.stringify(context)).toString("base64url");
   const signature = createHmac("sha256", authSecret()).update(payload).digest("base64url");

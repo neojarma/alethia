@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isDemoModeEnabled } from "@/lib/runtime-config";
 
 const roles = new Set(["manager", "employee", "developer", "legal"]);
-const allowedOrigins = new Set([
-  "https://beef-103-25-110-230.ngrok-free.app",
-]);
+const allowedOrigins = new Set(
+  (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/$/, ""))
+    .filter(Boolean),
+);
 const corsHeaders = {
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers":
@@ -19,7 +23,7 @@ const publicApiRoutes = new Set([
 ]);
 
 function withCors(response: NextResponse, origin: string) {
-  if (allowedOrigins.has(origin)) {
+  if (origin && allowedOrigins.has(origin.replace(/\/$/, ""))) {
     response.headers.set("Access-Control-Allow-Origin", origin);
   }
   Object.entries(corsHeaders).forEach(([key, value]) =>
@@ -43,9 +47,10 @@ export function proxy(request: NextRequest) {
 
   const cookieRole = request.cookies.get("alethia-demo-role")?.value;
   const headerRole = request.headers.get("x-demo-role")?.toLowerCase();
+  const demoEnabled = isDemoModeEnabled();
   const authenticated =
-    (cookieRole && roles.has(cookieRole)) ||
-    (headerRole && roles.has(headerRole)) ||
+    (demoEnabled && cookieRole && roles.has(cookieRole)) ||
+    (demoEnabled && headerRole && roles.has(headerRole)) ||
     Boolean(request.cookies.get("alethia-session")?.value);
 
   if (authenticated) return withCors(NextResponse.next(), origin);

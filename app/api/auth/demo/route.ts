@@ -1,10 +1,13 @@
 import type { DemoRole } from "@/lib/domain";
 import { NextResponse } from "next/server";
 import { AUTH_CONTEXT_COOKIE, CLIENT_SESSION_COOKIE } from "@/lib/client-auth";
+import { isDemoModeEnabled } from "@/lib/runtime-config";
 
 const roles: DemoRole[] = ["manager", "employee", "developer", "legal"];
 
 export async function POST(request: Request) {
+  if (!isDemoModeEnabled())
+    return Response.json({ error: "Demo mode is disabled." }, { status: 404 });
   const body = (await request.json().catch(() => null)) as {
     role?: string;
   } | null;

@@ -1,7 +1,12 @@
 import type { NextConfig } from "next";
 
+const allowedDevOrigins = (process.env.ALLOWED_DEV_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 const nextConfig: NextConfig = {
-  allowedDevOrigins: ["beef-103-25-110-230.ngrok-free.app"],
+  ...(allowedDevOrigins.length ? { allowedDevOrigins } : {}),
 };
 
 export default nextConfig;

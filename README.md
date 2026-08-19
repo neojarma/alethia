@@ -40,6 +40,13 @@ cp .env.example .env.local
 npm run dev
 ```
 
+For cross-origin deployments, configure `ALLOWED_ORIGINS` as a comma-separated
+list of full HTTPS origins. `ALLOWED_DEV_ORIGINS` accepts comma-separated hostnames
+used only by the Next.js development server. Production also requires a strong,
+unique `AUTH_SECRET`; the server refuses to sign authentication context without it.
+Set `ENABLE_DEMO_MODE=true` only for the competition showcase. When omitted from
+a production environment, demo cookies and `X-Demo-Role` headers are rejected.
+
 Open [http://localhost:3000](http://localhost:3000) for the competition showcase. Use `/login` to choose a fictional demo persona; authenticated sessions enter the protected `/workspace` route.
 
 Run the complete quality gate with:

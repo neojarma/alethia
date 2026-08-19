@@ -1,10 +1,16 @@
 import type { DemoRole } from "./domain";
 import { readAuthContext } from "./client-auth";
+import { isDemoModeEnabled } from "./runtime-config";
 
 const roles: DemoRole[] = ["manager", "employee", "developer", "legal"];
 export function getRole(request: Request): DemoRole {
   const clientContext = readAuthContext(request.headers.get("cookie"));
   if (clientContext) return clientContext.accountRole === "org_admin" || clientContext.accountRole === "manager" ? "manager" : clientContext.functionalRole;
+  if (!isDemoModeEnabled())
+    throw new Response(JSON.stringify({ error: "Authentication required" }), {
+      status: 401,
+      headers: { "content-type": "application/json" },
+    });
   const cookieRole = request.headers
     .get("cookie")
     ?.match(/(?:^|;\s*)alethia-demo-role=([^;]+)/)?.[1];
@@ -32,7 +38,14 @@ export function requireRole(request: Request, allowed: DemoRole[]) {
   return role;
 }
 export function getOrganizationId(request: Request) {
-  return readAuthContext(request.headers.get("cookie"))?.organizationId || request.headers.get("x-organization-id") || "org-alethia";
+  const organizationId = readAuthContext(request.headers.get("cookie"))?.organizationId;
+  if (organizationId) return organizationId;
+  if (isDemoModeEnabled())
+    return request.headers.get("x-organization-id") || "org-alethia";
+  throw new Response(JSON.stringify({ error: "Authentication required" }), {
+    status: 401,
+    headers: { "content-type": "application/json" },
+  });
 }
 export function getDemoUserId(request: Request) {
   const clientUserId = readAuthContext(request.headers.get("cookie"))?.userId;

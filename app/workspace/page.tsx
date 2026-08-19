@@ -2,6 +2,7 @@ import { Workspace } from "@/components/workspace";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getClientSession } from "@/lib/client-auth";
+import { isDemoModeEnabled } from "@/lib/runtime-config";
 
 const roles = ["Manager", "Employee", "Developer", "Legal"] as const;
 
@@ -9,7 +10,8 @@ export default async function WorkspacePage() {
   const cookieStore = await cookies();
   const roleCookie = cookieStore.get("alethia-demo-role")?.value;
   const role = roles.find((item) => item.toLowerCase() === roleCookie);
-  if (role) return <Workspace initialRole={role} mode="demo" />;
+  if (role && isDemoModeEnabled())
+    return <Workspace initialRole={role} mode="demo" />;
   const context = await getClientSession(cookieStore.get("alethia-session")?.value);
   if (!context || !context.organization) redirect("/login");
   const initialRole = context.user.accountRole === "org_admin" || context.user.accountRole === "manager"
