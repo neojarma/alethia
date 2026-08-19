@@ -1,0 +1,5 @@
+import { requireRole } from "@/lib/auth";
+import { evaluateModel } from "@/lib/governance-engine";
+import { mutateDb } from "@/lib/store";
+
+export async function POST(request: Request) { try { requireRole(request, ["manager"]); const body = await request.json() as { modelId?: string }; if (!body.modelId) return Response.json({ error: "modelId is required" }, { status: 400 }); const evaluation = await mutateDb(db => { const result = evaluateModel(db, body.modelId!); const record = { id: `eval-${Date.now()}`, modelId: body.modelId!, score: result.score, passed: result.passed, cases: result.cases.length, createdAt: new Date().toISOString() }; db.evaluations.push(record); const model = db.modelRegistry.find(x => x.id === body.modelId); if (model) { model.evalScore = result.score; model.status = result.passed ? "approved" : "blocked"; } return { ...record, results: result.cases }; }); return Response.json({ evaluation }); } catch (error) { if (error instanceof Response) return error; throw error; } }

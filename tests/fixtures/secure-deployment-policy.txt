@@ -1,0 +1,8 @@
+Section 1 · Production deployment approval
+Engineering changes to production require peer review and approval from the Engineering Manager. Emergency changes must be documented within 24 hours.
+
+Section 2 · Secrets and credentials
+Developers must use the approved secrets manager. Credentials and API keys must never be committed to source repositories or included in support tickets.
+
+Section 3 · Verification and rollback
+Before deployment, the owner must confirm automated checks pass and a rollback plan exists. After deployment, the owner must verify service health and record the outcome.
