@@ -379,23 +379,7 @@ function seed(): Database {
   };
 }
 
-export async function readDb(): Promise<Database> {
-  if (globalThis._alethia_memory_db) {
-    return globalThis._alethia_memory_db;
-  }
-  let db: Database;
-  try {
-    try {
-      db = JSON.parse(await readFile(dataFile, "utf8")) as Database;
-    } catch {
-      db = JSON.parse(await readFile(tmpFile, "utf8")) as Database;
-    }
-  } catch {
-    db = seed();
-    await writeDb(db);
-    return db;
-  }
-
+function normalizeDb(db: Database): Database {
   db.analytics ||= [];
   db.divisions ||= [];
   db.clientAccounts ||= [];
@@ -562,36 +546,200 @@ export async function readDb(): Promise<Database> {
   db.usage ||= [];
   db.featureFlags ||= [];
   db.workflowTemplates ||= [];
+  return db;
+}
 
+// PostgreSQL persistence adapter
+async function getPostgresDb(): Promise<Database | null> {
+  const connectionString =
+    process.env.POSTGRES_URL ||
+    process.env.DATABASE_URL ||
+    process.env.NEON_DATABASE_URL;
+  if (!connectionString) return null;
+
+  try {
+    const { Pool } = await import("pg");
+    const pool = new Pool({
+      connectionString,
+      ssl: connectionString.includes("localhost")
+        ? false
+        : { rejectUnauthorized: false },
+    });
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS alethia_store (
+        id TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    const res = await pool.query(
+      "SELECT data FROM alethia_store WHERE id = 'main'",
+    );
+    await pool.end();
+    if (res.rows.length && res.rows[0].data) {
+      const data = typeof res.rows[0].data === "string"
+        ? JSON.parse(res.rows[0].data)
+        : res.rows[0].data;
+      return data as Database;
+    }
+  } catch (err) {
+    console.error("PostgreSQL read error:", err);
+  }
+  return null;
+}
+
+async function savePostgresDb(db: Database): Promise<boolean> {
+  const connectionString =
+    process.env.POSTGRES_URL ||
+    process.env.DATABASE_URL ||
+    process.env.NEON_DATABASE_URL;
+  if (!connectionString) return false;
+
+  try {
+    const { Pool } = await import("pg");
+    const pool = new Pool({
+      connectionString,
+      ssl: connectionString.includes("localhost")
+        ? false
+        : { rejectUnauthorized: false },
+    });
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS alethia_store (
+        id TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+
+    await pool.query(
+      `INSERT INTO alethia_store (id, data, updated_at)
+       VALUES ('main', $1, NOW())
+       ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = NOW()`,
+      [JSON.stringify(db)],
+    );
+    await pool.end();
+    return true;
+  } catch (err) {
+    console.error("PostgreSQL write error:", err);
+    return false;
+  }
+}
+
+// MongoDB persistence adapter
+async function getMongoDb(): Promise<Database | null> {
+  const mongoUrl = process.env.MONGODB_URI || process.env.MONGO_URL;
+  if (!mongoUrl) return null;
+
+  try {
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(mongoUrl);
+    await client.connect();
+    const dbName = process.env.DB_NAME || "alethia";
+    const collection = client.db(dbName).collection("alethia_store");
+    const doc = await collection.findOne({ _id: "main" as any });
+    await client.close();
+    if (doc && doc.data) {
+      return doc.data as Database;
+    }
+  } catch (err) {
+    console.error("MongoDB read error:", err);
+  }
+  return null;
+}
+
+async function saveMongoDb(db: Database): Promise<boolean> {
+  const mongoUrl = process.env.MONGODB_URI || process.env.MONGO_URL;
+  if (!mongoUrl) return false;
+
+  try {
+    const { MongoClient } = await import("mongodb");
+    const client = new MongoClient(mongoUrl);
+    await client.connect();
+    const dbName = process.env.DB_NAME || "alethia";
+    const collection = client.db(dbName).collection("alethia_store");
+    await collection.updateOne(
+      { _id: "main" as any },
+      { $set: { data: db, updatedAt: new Date() } },
+      { upsert: true },
+    );
+    await client.close();
+    return true;
+  } catch (err) {
+    console.error("MongoDB write error:", err);
+    return false;
+  }
+}
+
+export async function readDb(): Promise<Database> {
+  // 1. PostgreSQL (Neon, Supabase, Vercel Postgres, Railway, etc.)
+  const pgDb = await getPostgresDb();
+  if (pgDb) {
+    globalThis._alethia_memory_db = normalizeDb(pgDb);
+    return globalThis._alethia_memory_db;
+  }
+
+  // 2. MongoDB (MongoDB Atlas, Emergent Mongo, etc.)
+  const mongoDb = await getMongoDb();
+  if (mongoDb) {
+    globalThis._alethia_memory_db = normalizeDb(mongoDb);
+    return globalThis._alethia_memory_db;
+  }
+
+  // 3. In-memory / File / Seed fallback
+  if (globalThis._alethia_memory_db) {
+    return globalThis._alethia_memory_db;
+  }
+
+  let db: Database;
+  try {
+    try {
+      db = JSON.parse(await readFile(dataFile, "utf8")) as Database;
+    } catch {
+      db = JSON.parse(await readFile(tmpFile, "utf8")) as Database;
+    }
+  } catch {
+    db = seed();
+    await writeDb(db);
+    return db;
+  }
+
+  db = normalizeDb(db);
   globalThis._alethia_memory_db = db;
   return db;
 }
 
 export async function writeDb(db: Database) {
   globalThis._alethia_memory_db = db;
-  const jsonContent = JSON.stringify(db, null, 2);
 
-  // Try writing to project data directory first (local dev / persistent servers)
+  // 1. PostgreSQL if configured
+  if (await savePostgresDb(db)) {
+    return;
+  }
+
+  // 2. MongoDB if configured
+  if (await saveMongoDb(db)) {
+    return;
+  }
+
+  // 3. Fallback: Local file / /tmp
+  const jsonContent = JSON.stringify(db, null, 2);
   try {
     await mkdir(dataDir, { recursive: true });
     const temp = `${dataFile}.tmp`;
     await writeFile(temp, jsonContent);
     await rename(temp, dataFile);
     return;
-  } catch {
-    // Read-only filesystem (EROFS on Vercel) - fall through to /tmp
-  }
+  } catch {}
 
-  // Fallback: write to OS temp directory (/tmp) which is writable on Vercel lambda
   try {
     const temp = `${tmpFile}.tmp`;
     await writeFile(temp, jsonContent);
     await rename(temp, tmpFile);
-  } catch {
-    // In-memory cache is already updated, so serverless execution safely continues
-  }
+  } catch {}
 }
-
 
 export async function mutateDb<T>(fn: (db: Database) => T | Promise<T>) {
   const db = await readDb();
@@ -605,3 +753,4 @@ export async function resetDb() {
   await writeDb(db);
   return db;
 }
+
