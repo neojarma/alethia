@@ -88,6 +88,20 @@
       "tokenHash": "9c68b696f915c2dce9a4e10e2d055d535f527b75265e34239c0cf317516d41dd",
       "expiresAt": "2026-08-19T23:49:45.067Z",
       "createdAt": "2026-08-19T15:49:45.068Z"
+    },
+    {
+      "id": "0345cc95-9d4c-4e1b-b841-2307386916cd",
+      "userId": "ca-admin",
+      "tokenHash": "20abb909d6b0dbcd45f0062cd06f6370ad0838199f91a9f40de162ed61839f6b",
+      "expiresAt": "2026-08-20T01:15:43.757Z",
+      "createdAt": "2026-08-19T17:15:43.758Z"
+    },
+    {
+      "id": "ef34bd3c-57b1-425d-a4a9-61df1f47332c",
+      "userId": "ca-admin",
+      "tokenHash": "958684166b9f6e0ec9e510702099f06210fd99175622733eb8393e22881a89f1",
+      "expiresAt": "2026-08-20T01:20:39.895Z",
+      "createdAt": "2026-08-19T17:20:39.895Z"
     }
   ],
   "users": [

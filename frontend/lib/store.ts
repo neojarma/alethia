@@ -3,11 +3,14 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomBytes, scryptSync } from "node:crypto";
+import type { Pool } from "pg";
 import type { Database } from "./domain";
 import { chunkDocument } from "./knowledge-engine";
 
 declare global {
   var _alethia_memory_db: Database | undefined;
+  var _alethia_postgres_pools: Map<string, Pool> | undefined;
+  var _alethia_postgres_ready: Map<string, Promise<void>> | undefined;
 }
 
 const dataDir = path.join(process.cwd(), "data");
@@ -550,28 +553,51 @@ function normalizeDb(db: Database): Database {
 }
 
 function getConnectionStringVariants(rawConnectionString: string): string[] {
-  const match = rawConnectionString.match(
-    /^postgres(?:ql)?:\/\/([^:]+):([^@]+)@db\.([a-z0-9]+)\.supabase\.co(?::\d+)?\/(.+)$/
-  );
-  if (!match) return [rawConnectionString];
+  // Never guess Supabase regions. A bad direct URL previously caused seven
+  // sequential four-second connection attempts on every login.
+  return [rawConnectionString];
+}
 
-  const [, user, pass, ref, dbName] = match;
-  const poolUser = user.includes(".") ? user : `${user}.${ref}`;
-  const regions = [
-    "ap-southeast-2",
-    "ap-southeast-1",
-    "us-east-1",
-    "us-west-1",
-    "eu-central-1",
-    "sa-east-1",
-  ];
+async function getPostgresPool(connectionString: string): Promise<Pool> {
+  const pools = globalThis._alethia_postgres_pools ??= new Map();
+  const existing = pools.get(connectionString);
+  if (existing) return existing;
 
-  const poolerUrls = regions.map(
-    (region) =>
-      `postgresql://${poolUser}:${pass}@aws-0-${region}.pooler.supabase.com:6543/${dbName}`
-  );
+  const { Pool } = await import("pg");
+  const parsedConnectionString = new URL(connectionString);
+  // pg-connection-string lets sslmode in the URL replace the explicit SSL
+  // object. Vercel's generated Supabase URL uses sslmode=require, which can
+  // unexpectedly enforce certificate-chain verification with pooled hosts.
+  parsedConnectionString.searchParams.delete("sslmode");
+  const pool = new Pool({
+    connectionString: parsedConnectionString.toString(),
+    connectionTimeoutMillis: 2000,
+    idleTimeoutMillis: 30000,
+    max: 5,
+    allowExitOnIdle: true,
+    ssl: connectionString.includes("localhost")
+      ? false
+      : { rejectUnauthorized: false },
+  });
+  pools.set(connectionString, pool);
+  return pool;
+}
 
-  return [rawConnectionString, ...poolerUrls];
+async function ensurePostgresStore(pool: Pool, connectionString: string) {
+  const ready = globalThis._alethia_postgres_ready ??= new Map();
+  let initialization = ready.get(connectionString);
+  if (!initialization) {
+    initialization = pool.query(`
+      CREATE TABLE IF NOT EXISTS alethia_store (
+        id TEXT PRIMARY KEY,
+        data JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+    `).then(() => undefined);
+    ready.set(connectionString, initialization);
+    initialization.catch(() => ready.delete(connectionString));
+  }
+  await initialization;
 }
 
 // PostgreSQL / Supabase Direct Connection persistence adapter
@@ -584,31 +610,16 @@ async function getPostgresDb(): Promise<Database | null> {
     process.env.NEON_DATABASE_URL;
   if (!rawConnectionString) return null;
 
-  const { Pool } = await import("pg");
   const candidates = getConnectionStringVariants(rawConnectionString);
 
   for (const connectionString of candidates) {
     try {
-      const pool = new Pool({
-        connectionString,
-        connectionTimeoutMillis: 4000,
-        ssl: connectionString.includes("localhost")
-          ? false
-          : { rejectUnauthorized: false },
-      });
-
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS alethia_store (
-          id TEXT PRIMARY KEY,
-          data JSONB NOT NULL,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
+      const pool = await getPostgresPool(connectionString);
+      await ensurePostgresStore(pool, connectionString);
 
       const res = await pool.query(
         "SELECT data FROM alethia_store WHERE id = 'main'",
       );
-      await pool.end();
       if (res.rows.length && res.rows[0].data) {
         const data = typeof res.rows[0].data === "string"
           ? JSON.parse(res.rows[0].data)
@@ -616,9 +627,7 @@ async function getPostgresDb(): Promise<Database | null> {
         return data as Database;
       }
       return null;
-    } catch {
-      // If direct IPv6 db.[ref].supabase.co fails (ENOTFOUND on Vercel), continue to Pooler candidate
-    }
+    } catch {}
   }
   return null;
 }
@@ -632,26 +641,12 @@ async function savePostgresDb(db: Database): Promise<boolean> {
     process.env.NEON_DATABASE_URL;
   if (!rawConnectionString) return false;
 
-  const { Pool } = await import("pg");
   const candidates = getConnectionStringVariants(rawConnectionString);
 
   for (const connectionString of candidates) {
     try {
-      const pool = new Pool({
-        connectionString,
-        connectionTimeoutMillis: 4000,
-        ssl: connectionString.includes("localhost")
-          ? false
-          : { rejectUnauthorized: false },
-      });
-
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS alethia_store (
-          id TEXT PRIMARY KEY,
-          data JSONB NOT NULL,
-          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
+      const pool = await getPostgresPool(connectionString);
+      await ensurePostgresStore(pool, connectionString);
 
       await pool.query(
         `INSERT INTO alethia_store (id, data, updated_at)
@@ -659,11 +654,8 @@ async function savePostgresDb(db: Database): Promise<boolean> {
          ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = NOW()`,
         [JSON.stringify(db)],
       );
-      await pool.end();
       return true;
-    } catch {
-      // Continue to next candidate (IPv4 pooler) if direct connection fails
-    }
+    } catch {}
   }
   return false;
 }
@@ -743,8 +735,8 @@ async function getMongoDb(): Promise<Database | null> {
     const client = new MongoClient(mongoUrl);
     await client.connect();
     const dbName = process.env.DB_NAME || "alethia";
-    const collection = client.db(dbName).collection("alethia_store");
-    const doc = await collection.findOne({ _id: "main" as any });
+    const collection = client.db(dbName).collection<{ _id: string; data?: Database; updatedAt?: Date }>("alethia_store");
+    const doc = await collection.findOne({ _id: "main" });
     await client.close();
     if (doc && doc.data) {
       return doc.data as Database;
@@ -764,9 +756,9 @@ async function saveMongoDb(db: Database): Promise<boolean> {
     const client = new MongoClient(mongoUrl);
     await client.connect();
     const dbName = process.env.DB_NAME || "alethia";
-    const collection = client.db(dbName).collection("alethia_store");
+    const collection = client.db(dbName).collection<{ _id: string; data?: Database; updatedAt?: Date }>("alethia_store");
     await collection.updateOne(
-      { _id: "main" as any },
+      { _id: "main" },
       { $set: { data: db, updatedAt: new Date() } },
       { upsert: true },
     );
@@ -871,4 +863,3 @@ export async function resetDb() {
   await writeDb(db);
   return db;
 }
-
