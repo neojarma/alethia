@@ -16,7 +16,7 @@ export function ClientLogin() {
     const response = await fetch("/api/auth/client", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email, password }) });
     const result = await response.json();
     if (!response.ok) { setError(result.error); setBusy(false); return; }
-    router.push("/workspace"); router.refresh();
+    router.push("/workspace");
   }
   return <main className="client-auth-page">
     <section className="client-auth-story">
