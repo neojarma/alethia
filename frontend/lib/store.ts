@@ -549,88 +549,125 @@ function normalizeDb(db: Database): Database {
   return db;
 }
 
+function getConnectionStringVariants(rawConnectionString: string): string[] {
+  const match = rawConnectionString.match(
+    /^postgres(?:ql)?:\/\/([^:]+):([^@]+)@db\.([a-z0-9]+)\.supabase\.co(?::\d+)?\/(.+)$/
+  );
+  if (!match) return [rawConnectionString];
+
+  const [, user, pass, ref, dbName] = match;
+  const poolUser = user.includes(".") ? user : `${user}.${ref}`;
+  const regions = [
+    "ap-southeast-2",
+    "ap-southeast-1",
+    "us-east-1",
+    "us-west-1",
+    "eu-central-1",
+    "sa-east-1",
+  ];
+
+  const poolerUrls = regions.map(
+    (region) =>
+      `postgresql://${poolUser}:${pass}@aws-0-${region}.pooler.supabase.com:6543/${dbName}`
+  );
+
+  return [rawConnectionString, ...poolerUrls];
+}
+
 // PostgreSQL / Supabase Direct Connection persistence adapter
 async function getPostgresDb(): Promise<Database | null> {
-  const connectionString =
+  const rawConnectionString =
     process.env.SUPABASE_DATABASE_URL ||
     process.env.SUPABASE_DB_URL ||
     process.env.POSTGRES_URL ||
     process.env.DATABASE_URL ||
     process.env.NEON_DATABASE_URL;
-  if (!connectionString) return null;
+  if (!rawConnectionString) return null;
 
-  try {
-    const { Pool } = await import("pg");
-    const pool = new Pool({
-      connectionString,
-      ssl: connectionString.includes("localhost")
-        ? false
-        : { rejectUnauthorized: false },
-    });
+  const { Pool } = await import("pg");
+  const candidates = getConnectionStringVariants(rawConnectionString);
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS alethia_store (
-        id TEXT PRIMARY KEY,
-        data JSONB NOT NULL,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  for (const connectionString of candidates) {
+    try {
+      const pool = new Pool({
+        connectionString,
+        connectionTimeoutMillis: 4000,
+        ssl: connectionString.includes("localhost")
+          ? false
+          : { rejectUnauthorized: false },
+      });
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS alethia_store (
+          id TEXT PRIMARY KEY,
+          data JSONB NOT NULL,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+      const res = await pool.query(
+        "SELECT data FROM alethia_store WHERE id = 'main'",
       );
-    `);
-
-    const res = await pool.query(
-      "SELECT data FROM alethia_store WHERE id = 'main'",
-    );
-    await pool.end();
-    if (res.rows.length && res.rows[0].data) {
-      const data = typeof res.rows[0].data === "string"
-        ? JSON.parse(res.rows[0].data)
-        : res.rows[0].data;
-      return data as Database;
+      await pool.end();
+      if (res.rows.length && res.rows[0].data) {
+        const data = typeof res.rows[0].data === "string"
+          ? JSON.parse(res.rows[0].data)
+          : res.rows[0].data;
+        return data as Database;
+      }
+      return null;
+    } catch {
+      // If direct IPv6 db.[ref].supabase.co fails (ENOTFOUND on Vercel), continue to Pooler candidate
     }
-  } catch (err) {
-    console.error("PostgreSQL/Supabase DB read error:", err);
   }
   return null;
 }
 
 async function savePostgresDb(db: Database): Promise<boolean> {
-  const connectionString =
+  const rawConnectionString =
     process.env.SUPABASE_DATABASE_URL ||
     process.env.SUPABASE_DB_URL ||
     process.env.POSTGRES_URL ||
     process.env.DATABASE_URL ||
     process.env.NEON_DATABASE_URL;
-  if (!connectionString) return false;
+  if (!rawConnectionString) return false;
 
-  try {
-    const { Pool } = await import("pg");
-    const pool = new Pool({
-      connectionString,
-      ssl: connectionString.includes("localhost")
-        ? false
-        : { rejectUnauthorized: false },
-    });
+  const { Pool } = await import("pg");
+  const candidates = getConnectionStringVariants(rawConnectionString);
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS alethia_store (
-        id TEXT PRIMARY KEY,
-        data JSONB NOT NULL,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  for (const connectionString of candidates) {
+    try {
+      const pool = new Pool({
+        connectionString,
+        connectionTimeoutMillis: 4000,
+        ssl: connectionString.includes("localhost")
+          ? false
+          : { rejectUnauthorized: false },
+      });
+
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS alethia_store (
+          id TEXT PRIMARY KEY,
+          data JSONB NOT NULL,
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+
+      await pool.query(
+        `INSERT INTO alethia_store (id, data, updated_at)
+         VALUES ('main', $1, NOW())
+         ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = NOW()`,
+        [JSON.stringify(db)],
       );
-    `);
-
-    await pool.query(
-      `INSERT INTO alethia_store (id, data, updated_at)
-       VALUES ('main', $1, NOW())
-       ON CONFLICT (id) DO UPDATE SET data = $1, updated_at = NOW()`,
-      [JSON.stringify(db)],
-    );
-    await pool.end();
-    return true;
-  } catch (err) {
-    console.error("PostgreSQL/Supabase DB write error:", err);
-    return false;
+      await pool.end();
+      return true;
+    } catch {
+      // Continue to next candidate (IPv4 pooler) if direct connection fails
+    }
   }
+  return false;
 }
+
 
 // Supabase REST SDK Persistence Adapter
 async function getSupabaseRestDb(): Promise<Database | null> {
