@@ -807,9 +807,11 @@ function HomePage({
               )}
             </div>
             <div className="card-body bar-list">
-              {(divisionReadiness.length?divisionReadiness.map((item)=>[item.name,`${item.coverage}%`]):[
-                ["Engineering", "92%"], ["Legal & Compliance", "88%"], ["Operations", "78%"], ["Customer Support", "64%"],
-              ]).map(([name, value]) => (
+              {(divisionReadiness.length ? divisionReadiness.map((item) => [item.name, `${item.coverage}%`]) : (clientMode ? [
+                ["Engineering", "0%"], ["Legal & Compliance", "0%"], ["Customer Support", "0%"], ["Operations", "0%"]
+              ] : [
+                ["Engineering", "92%"], ["Legal & Compliance", "88%"], ["Operations", "78%"], ["Customer Support", "64%"]
+              ])).map(([name, value]) => (
                 <div key={name}>
                   <div className="bar-label">
                     <span>{name}</span>
